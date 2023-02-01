@@ -17,6 +17,6 @@ PREFERRED_URL_SCHEME: https
 FEATURE_GENERAL_OCI_SUPPORT: true
 FEATURE_HELM_OCI_SUPPORT: true
 DB_URI: postgresql://{{ var_az_dbserver_adminuser }}@{{ var_az_dbserver_name }}:{{ az_quay_dbserver_password }}@{{ out_az_dbserver_server_fqdn }}:5432/{{ var_az_dbserver_dbname }}
-SERVER_HOSTNAME: vodafone.apps.{{ var_az_dns_zone }}
+SERVER_HOSTNAME: rakesh.apps.{{ var_az_dns_zone }}
 SUPER_USERS:
   - admin

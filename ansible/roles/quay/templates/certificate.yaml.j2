@@ -2,17 +2,17 @@
   apiVersion: cert-manager.io/v1alpha3
   kind: Certificate
   metadata:
-    name: vodafone.apps.{{ var_az_dns_zone }}
+    name: rakesh.apps.{{ var_az_dns_zone }}
   spec:
     acme:
       config:
       - dns01:
           provider: dns
         domains:
-        - 'vodafone.apps.{{ var_az_dns_zone }}'
-    commonName: 'vodafone.apps.{{ var_az_dns_zone }}'
+        - 'rakesh.apps.{{ var_az_dns_zone }}'
+    commonName: 'rakesh.apps.{{ var_az_dns_zone }}'
     dnsNames:
-     - 'vodafone.apps.{{ var_az_dns_zone }}'
+     - 'rakesh.apps.{{ var_az_dns_zone }}'
     issuerRef:
       kind: ClusterIssuer
       name: {{ var_az_dns_zone }}
