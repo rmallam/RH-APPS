@@ -1,0 +1,22 @@
+
+  apiVersion: cert-manager.io/v1alpha3
+  kind: Certificate
+  metadata:
+    name: {{ var_az_dns_zone }}
+  spec:
+    acme:
+      config:
+      - dns01:
+          provider: dns
+        domains:
+        - '*.apps.{{ var_az_dns_zone }}'
+    commonName: 'api.{{ var_az_dns_zone }}'
+    dnsNames:
+     - '*.apps.{{ var_az_dns_zone }}'
+     - 'api.{{ var_az_dns_zone }}'
+    issuerRef:
+      kind: ClusterIssuer
+      name: {{ var_az_dns_zone }}
+    secretName: ingress-and-api-certs
+    duration: 8760h 
+    renewBefore: 360h 

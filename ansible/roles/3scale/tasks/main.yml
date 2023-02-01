@@ -1,0 +1,148 @@
+---
+#tasks file for 3scale
+- name: Create 3scale project
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    api_version: v1
+    state: present
+    kind: Namespace
+    name: "{{ project_name }}"
+
+## Discover facts about the new project for Storage Class Creation.
+- name: Get the {{ project_name }} uid from uid-range
+  shell: >
+    oc get project {{ project_name }}  -o jsonpath='{ .metadata.annotations.openshift\.io\/sa\.scc\.uid\-range }' | cut -f1 -d"/"
+  register: project_uid_from_uid_range
+  ignore_errors: True
+
+- set_fact:
+    project_uid: '{{project_uid_from_uid_range["stdout"]}}'
+
+- name: Create new storage class for rwx default namespace
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    resource_definition: "{{ lookup('template', 'templates/storageclass.yaml.j2') }}"
+    validate_certs: no
+
+    ## Workaround for issue with 3Scale use of azurefiles added Nick Day 18/6/21
+- name: Create new storage class for rwx azure files for 3 Space 
+  vars:
+    storage_class_namespace: "{{ project_name }}"
+    namespace_uid: "{{ project_uid }}"
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    resource_definition: "{{ lookup('template', 'templates/storageclass.yaml.j2') }}"
+    validate_certs: no
+
+- name: Create role and rolebinding to access azurefile storage class
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    resource_definition: "{{ lookup('template', 'templates/rolebinding.yaml.j2') }}"
+    validate_certs: no
+
+- name: add policy to bind the pvc
+  shell: /tmp/oc policy add-role-to-user admin system:serviceaccount:kube-system:persistent-volume-binder -n "{{ project_name }}"
+#  no_log: true 
+
+- name: Create an operator group
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    merge_type: merge
+    name: "{{ operator_name }}"
+    namespace: "{{ project_name }}"
+    api_version: operators.coreos.com/v1
+    definition:
+      kind: OperatorGroup
+      spec:
+        targetNamespaces:
+          - "{{ project_name }}"
+
+- name: Create a "{{ project_name }}" operator subscription
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    definition:
+      apiVersion: "{{ operator_api_group }}"
+      kind: Subscription
+      metadata:
+        name: "{{ operator_name }}"
+        namespace: "{{ project_name }}"
+      spec:
+        channel: "{{ operator_channel }}"
+        installPlanApproval: "{{ operator_plan_approval }}"
+        name: "{{ operator_name }}"
+        source: "{{ operator_source }}"
+        sourceNamespace: "{{ operator_source_namespace }}"
+        startingCSV: "{{ operator_startingCSV }}"
+
+- name: Check CR Status (wait until complete)
+  k8s_info: 
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    kind: Deployment
+    name: "3scale-operator"
+    namespace: "{{ project_name }}"
+  register: cr
+  until: cr.resources[0].status.readyReplicas is defined and cr.resources[0].status.readyReplicas != 0
+  retries: 12
+  delay: 30
+
+- name: "Create system-database secret for external DB access"
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    merge_type: merge
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:  
+        labels:
+          app: 3scale-api-management
+          threescale_component: system
+        name: system-database
+        namespace: "{{ project_name }}"
+      stringData:         
+        DB_PASSWORD: "{{ threescale_db_password }}"
+        DB_USER: "{{ threescale_db_username }}"
+        URL: "{{ threescale_db_url }}"
+
+- name: Create a the 3scale API Manager
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    api_version: apps.3scale.net/v1alpha1
+    state: present
+    kind: APIManager
+    merge_type: merge
+    name: "{{ cr_name }}"
+    namespace: "{{ project_name }}"
+    definition: 
+      spec:
+        wildcardDomain: "dx.apps.{{ var_az_dns_zone }}"
+        system:
+          fileStorage:
+            persistentVolumeClaim:
+              storageClassName: azurefiles{{ project_name }}
+          database:
+            postgresql: {}
+
+- name: Pause play until a tenant admin URL is reachable
+  uri:
+    url: "https://3scale-admin.apps.{{ var_az_dns_zone }}/p/login"
+    follow_redirects: none
+    method: GET
+    validate_certs: false
+  register: _result
+  until: _result.status == 200
+  retries: 10 
+  delay: 60

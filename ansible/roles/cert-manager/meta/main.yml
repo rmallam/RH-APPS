@@ -1,0 +1,7 @@
+galaxy_info:
+  author: Rakesh Kumar Mallam
+  description: Red Hat OpenShift Cluster cert manager config
+  company: Red Hat
+  license: Apache-2.0
+  min_ansible_version: 2.4
+dependencies: []

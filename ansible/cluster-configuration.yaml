@@ -1,0 +1,23 @@
+---
+- name: Deploy OpenShift cluster configuration
+  hosts: awsutasrp02
+  module_defaults:
+    group/k8s:
+      validate_certs: false
+  vars:
+    post_install: true
+    ansible_python_interpreter: /usr/bin/python3.6
+  tasks:
+    # - set_fact:
+    #     k8s_auth:
+    #       api_key: 
+    - name: Run post install tasks
+      include_role:
+        name: "{{ item }}"
+      loop:
+        - ocp4-tokens
+        - ocp4-post
+        - efk
+        - monitoring
+        - cert-manager
+

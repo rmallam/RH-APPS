@@ -1,0 +1,10 @@
+---
+# defaults file for rhdg-datagrid
+rhdg_datagrid_name: "datagrid"
+rhdg_datagrid_replicas: 1
+rhdg_datagrid_cpu: "1000m"
+rhdg_datagrid_mem: "4Gi"
+#datagrid java_mem_ratio of 70% (4Gi*0.7~=2860m)
+rhdg_datagrid_mem_java: "2860m"
+rhdg_datagrid_storage: "6Gi"
+rhdg_datagrid_storage_class_rwo: "azurefiles"

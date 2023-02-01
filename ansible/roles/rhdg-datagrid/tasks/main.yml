@@ -1,0 +1,105 @@
+---
+- name: Ensure RHDG project is present
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    api_version: v1
+    state: present
+    kind: Namespace
+    name: "{{ rhdg_datagrid_project_name }}"
+
+- set_fact:
+    rhdg_datagrid_credentials_secret_name: "{{ rhdg_datagrid_name }}-credentials"
+
+- name: "Ensure secret {{ rhdg_datagrid_credentials_secret_name }} is absent"
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: absent
+    kind: Secret
+    name: "{{ rhdg_datagrid_credentials_secret_name }}"
+    namespace: "{{ rhdg_datagrid_project_name }}"
+
+- name: Create Data Grid identities.yaml
+  template: 
+    src: identities.yaml.j2
+    dest: "/tmp/identities.yaml"
+  no_log: true
+
+- name: "Create Data Grid credentials secret {{ rhdg_datagrid_credentials_secret_name }}"
+  shell: "oc -n {{ rhdg_datagrid_project_name }} create secret generic {{ rhdg_datagrid_credentials_secret_name }} --from-file=/tmp/identities.yaml"
+
+- name: Set labels to secret
+  shell: "oc -n {{ rhdg_datagrid_project_name }} label secret {{ rhdg_datagrid_credentials_secret_name }} app=infinispan-secret-identities clusterName={{ rhdg_datagrid_name }} infinispan_cr={{ rhdg_datagrid_name }}"
+
+- name: Create Data Grid instance
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    definition:
+      apiVersion: infinispan.org/v1
+      kind: Infinispan
+      metadata:
+        name: "{{ rhdg_datagrid_name }}"
+        namespace: "{{ rhdg_datagrid_project_name }}"
+      spec:
+        replicas: "{{ rhdg_datagrid_replicas }}"
+        service:
+          type: DataGrid
+        container:
+          extraJvmOpts: "-XX:NativeMemoryTracking=summary -XX:+UseG1GC -XX:+UseStringDeduplication -Xmx{{ rhdg_datagrid_mem_java }} -Xms{{ rhdg_datagrid_mem_java }} " 
+#          extraJvmOpts: "-XX:NativeMemoryTracking=summary -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+UnlockExperimentalVMOptions -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 "
+          cpu: "{{ rhdg_datagrid_cpu }}"
+          memory: "{{ rhdg_datagrid_mem }}"
+          storage: "{{ rhdg_datagrid_storage }}"
+          storageClassName: "{{ rhdg_datagrid_storage_class_rwo }}"
+        security:
+            endpointSecretName: "{{ rhdg_datagrid_credentials_secret_name }}"
+        expose:
+# temporary exposed as Route for debugging during development
+          type: Route
+        logging:
+          categories:
+            org.infinispan: debug
+            org.jgroups: debug
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100 
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: infinispan-pod
+                    clusterName: "{{ rhdg_datagrid_name }}"
+                    infinispan_cr: "{{ rhdg_datagrid_name }}"
+                topologyKey: "topology.kubernetes.io/zone" 
+            - weight: 90 
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: infinispan-pod
+                    clusterName: "{{ rhdg_datagrid_name }}"
+                    infinispan_cr: "{{ rhdg_datagrid_name }}"
+                topologyKey: "kubernetes.io/hostname" 
+
+- name: Check Data Grid StatefulSet status (wait until complete)
+  k8s_info: 
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    kind: StatefulSet
+    name: "{{ rhdg_datagrid_name }}"
+    namespace: "{{ rhdg_datagrid_project_name }}"
+  register: result_obj
+  until: result_obj.resources[0].status.readyReplicas is defined and result_obj.resources[0].status.readyReplicas == rhdg_datagrid_replicas
+  retries: 12
+  delay: 30
+
+- name: Data Grid StatefulSet def
+  debug:
+    var: result_obj.resources[0]
+
+- name: clean up temp folder/files
+  file:
+    path: "/tmp/identities.yaml"
+    state: absent

@@ -1,0 +1,21 @@
+
+  apiVersion: cert-manager.io/v1alpha3
+  kind: Certificate
+  metadata:
+    name: vodafone.apps.{{ var_az_dns_zone }}
+  spec:
+    acme:
+      config:
+      - dns01:
+          provider: dns
+        domains:
+        - 'vodafone.apps.{{ var_az_dns_zone }}'
+    commonName: 'vodafone.apps.{{ var_az_dns_zone }}'
+    dnsNames:
+     - 'vodafone.apps.{{ var_az_dns_zone }}'
+    issuerRef:
+      kind: ClusterIssuer
+      name: {{ var_az_dns_zone }}
+    secretName: {{ quay_project_name }}
+    duration: 8400h 
+    renewBefore: 360h 

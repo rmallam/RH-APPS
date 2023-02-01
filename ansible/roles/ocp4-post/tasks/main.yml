@@ -1,0 +1,137 @@
+---
+- name: Delete the api record set
+  shell: az network dns record-set a delete --name api --resource-group "{{ var_az_resourcegroup_name }}" --zone-name "{{ var_az_dns_zone }}" --yes
+
+- name: Delete the apps record set
+  shell: az network dns record-set a delete --name *.apps --resource-group "{{ var_az_resourcegroup_name }}" --zone-name "{{ var_az_dns_zone }}" --yes
+
+- name: add ingress api DNS record set
+  shell: az network dns record-set a add-record  --record-set-name *.apps --resource-group "{{ var_az_resourcegroup_name }}" --zone-name "{{ var_az_dns_zone }}" --ipv4-address "{{ ingressip }}" --ttl 300
+
+- name: add kube api DNS record set
+  shell: az network dns record-set a add-record  --record-set-name api --resource-group "{{ var_az_resourcegroup_name }}" --zone-name "{{ var_az_dns_zone }}" --ipv4-address "{{ kubeip }}" --ttl 300
+
+- name: Log in to the cluster
+  shell: /tmp/oc login --server="{{ api_url }}" -u kubeadmin -p "{{ default_kubeadmin.stdout_lines.0 }}" --insecure-skip-tls-verify=true 
+#  no_log: true 
+
+- name: Delete initial secret
+  shell: /tmp/oc delete secret openid-client-secret-azuread -n openshift-config
+  ignore_errors: true
+
+- name: Create secret
+  shell: /tmp/oc create secret generic openid-client-secret-azuread -n openshift-config --from-literal=clientSecret={{ az_app_aro_service_principal_password }}
+  no_log: true 
+
+- name: Log on using k8s_auth
+  k8s_auth:
+    host: "{{ api_url }}"
+    state: present
+    username: kubeadmin
+    password: "{{ default_kubeadmin.stdout_lines.0 }}"
+  register: auth_output
+
+- name: Grab some global cluster trivia
+  k8s_facts:
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    api_version: config.openshift.io/v1
+    host: "{{ api_url }}"
+    kind: Infrastructure
+    name: cluster
+
+- name: deploy oauth-cluster.yaml
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    resource_definition: "{{ lookup('template', 'templates/oauth-cluster.yaml.j2') }}"
+
+# echo "Creating APP_ARO_ClusterAdmins Group..."
+- name: Create APP_ARO_ClusterAdmins
+  shell: /tmp/oc adm groups new APP_ARO_ClusterAdmins
+  ignore_errors: true
+
+# echo "Synchronizing APP_ARO_ClusterAdmins Group..."
+- name: Create APP_ARO_ClusterAdmins
+  shell: /tmp/oc adm groups add-users APP_ARO_ClusterAdmins $(az ad group member list --group 'GRP DX/Red Hat/OSS' --query '[].mail' -o tsv)
+
+- name: Create APP_ARO_ClusterAdmins
+  shell: /tmp/oc adm policy add-cluster-role-to-group cluster-admin APP_ARO_ClusterAdmins
+  ignore_errors: true
+
+# echo "Removing Kuberadmin virtual user"
+# - name: Create APP_ARO_ClusterAdmins
+#   shell: /tmp/oc delete secrets kubeadmin -n kube-system
+#   ignore_errors: true
+
+- name: Grab some global cluster trivia
+  k8s_facts:
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    api_version: config.openshift.io/v1
+    host: "{{ api_url }}"
+    kind: Infrastructure
+    name: cluster
+  register: infradata
+
+# Configure nodeselector labels:
+# # https://access.redhat.com/solutions/4233311
+# - name: Set the default node selector to application - can be overridden with ns annotations
+#   k8s:
+#     api_key: "{{ auth_output.k8s_auth.api_key }}"
+#     api_version: config.openshift.io/v1
+#     merge_type: merge
+#     kind: Scheduler
+#     name: cluster
+#     definition:
+#       spec:
+#         defaultNodeSelector: 'node-role.kubernetes.io/worker='
+
+# # https://docs.openshift.com/container-platform/4.3/machine_management/creating-infrastructure-machinesets.html#infrastructure-moving-router_creating-infrastructure-machinesets
+# - name: Set the router node selector
+#   k8s:
+#     host: "{{ api_url }}"
+#     api_key: "{{ auth_output.k8s_auth.api_key }}"
+#     api_version: operator.openshift.io/v1
+#     merge_type: merge
+#     kind: IngressController
+#     name: default
+#     namespace: openshift-ingress-operator
+#     definition:
+#       spec:
+#         nodePlacement:
+#           nodeSelector:
+#             matchLabels: 
+#               node-role.kubernetes.io/infra-shared: ""
+
+# # https://docs.openshift.com/container-platform/4.3/machine_management/creating-infrastructure-machinesets.html#infrastructure-moving-registry_creating-infrastructure-machinesets
+# - name: Set the registry node selector
+#   k8s:
+#     host: "{{ api_url }}"
+#     api_key: "{{ auth_output.k8s_auth.api_key }}"
+#     api_version: imageregistry.operator.openshift.io/v1
+#     merge_type: merge
+#     kind: Config
+#     name: cluster
+#     definition:
+#       spec:
+#         nodeSelector:
+#           node-role.kubernetes.io/infra-shared: ""
+
+# - name: Set ns annotations on infra projects so that defaultNodeSelector gets ignored by them
+#   k8s:
+#     host: "{{ api_url }}"
+#     api_key: "{{ auth_output.k8s_auth.api_key }}"
+#     api_version: v1
+#     kind: Namespace
+#     name: "{{ namespace }}"
+#     definition:
+#       metadata:
+#         annotations:
+#           openshift.io/node-selector: "node-role.kubernetes.io/infra-shared="
+#   loop_control:
+#     loop_var: namespace
+#   loop:
+#     - openshift-ingress
+#    - openshift-ingress-operator  # Already overridden by operator
+#    - openshift-image-registry    # Already overridden by operator
+
+

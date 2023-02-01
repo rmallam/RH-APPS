@@ -1,0 +1,75 @@
+---
+# tasks file for efk
+- name: Deploy cluster logging
+  block:
+  - name: Create elastic search operator namespace
+    k8s:
+      host: "{{ api_url }}"
+      api_key: "{{ auth_output.k8s_auth.api_key }}"
+      name: "{{ operator_namespace }}"
+      api_version: v1
+      kind: Namespace
+      state: present
+
+  - name: Create elasticsearch namespace
+    k8s:
+      host: "{{ api_url }}"
+      api_key: "{{ auth_output.k8s_auth.api_key }}"
+      name: "{{ logging_namespace }}"
+      api_version: v1
+      kind: Namespace
+      state: present
+      # Uncomment section to make the contents of this namespace ignore the default node selector:
+      # definition:
+      #   metadata:
+      #     annotations:
+      #       openshift.io/node-selector: ""
+      
+
+  - name: Create operator group and subscription
+    k8s:
+      host: "{{ api_url }}"
+      api_key: "{{ auth_output.k8s_auth.api_key }}"
+      state: present
+      resource_definition: "{{ lookup('template', 'templates/operatorgroup.yaml.j2') }}"
+      validate_certs: no
+
+  - name: Ensure ClusterLogging CRD Exists Before Using It
+    command:  /tmp/oc get crd clusterloggings.logging.openshift.io -n "{{ logging_namespace }}"
+    register: crds
+    retries: 10
+    until: '"clusterloggings.logging.openshift.io" in crds.stdout'
+    changed_when: false
+
+  - name: Create clusterlogging custom resource definition
+    k8s:
+      host: "{{ api_url }}"
+      api_key: "{{ auth_output.k8s_auth.api_key }}"
+      state: present
+      resource_definition: "{{ lookup('template', 'templates/clusterlogging-crd.yaml.j2') }}"
+      validate_certs: no
+
+  # # https://docs.openshift.com/container-platform/4.3/logging/cluster-logging-moving-nodes.html
+  # - name: Set the node selector used by EFK
+  #   k8s:
+  #     host: "{{ api_url }}"
+  #     api_key: "{{ auth_output.k8s_auth.api_key }}"
+  #     api_version: logging.openshift.io/v1
+  #     merge_type: merge
+  #     kind: ClusterLogging
+  #     name: instance
+  #     namespace: "{{ logging_namespace }}"
+  #     definition:
+  #       spec:
+  #         curation:
+  #           curator:
+  #             nodeSelector: 
+  #               node-role.kubernetes.io/worker: ""
+  #         logStore:
+  #           elasticsearch:
+  #             nodeSelector: 
+  #               node-role.kubernetes.io/worker: ""
+  #         visualization:
+  #           kibana:
+  #             nodeSelector: 
+  #               node-role.kubernetes.io/worker: ""

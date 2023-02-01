@@ -1,0 +1,8 @@
+---
+# vars file for az-postgres
+
+## name of the database server
+# var_az_dbserver_name
+
+## name of the database to be created in the database server 
+# var_az_dbserver_dbname 

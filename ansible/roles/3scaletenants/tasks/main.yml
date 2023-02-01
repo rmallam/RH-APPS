@@ -1,0 +1,128 @@
+---
+- name: Create tenant "{{ tenant }}" admin credentials
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    merge_type: merge
+    name: "{{ tenant }}-admin-secret"
+    namespace: "{{ project_name }}"
+    api_version: v1
+    definition:
+      kind: Secret
+      stringData:
+        admin_password: "admin"
+
+- name: Create a custom resource
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    api_version: v1alpha1
+    state: present
+    kind: Tenant
+    merge_type: merge
+    name: "{{ tenant }}"
+    namespace: "{{ project_name }}"
+    definition:
+      spec:
+        email: admin@example.com
+        masterCredentialsRef:
+          name: system-seed
+        organizationName: "{{ tenant }}"
+        passwordCredentialsRef:
+          name: "{{ tenant }}-admin-secret"
+        systemMasterUrl: 'https://master.apps.{{ var_az_dns_zone }}/'
+        tenantSecretRef:
+          name: "{{ tenant }}-provider-key"
+          namespace: "{{ project_name }}"
+        username: admin
+
+- name: Pause play until a tenant admin URL is reachable
+  uri:
+    url: "https://{{ tenant }}-admin.apps.{{ var_az_dns_zone }}/p/login"
+    follow_redirects: none
+    method: GET
+    validate_certs: false
+  register: _result
+  until: _result.status == 200
+  retries: 10 # 720 * 5 seconds = 1hour (60*60/5)
+  delay: 60 # Every 5 seconds
+
+# Get the {{ tenant }} Admin URL
+- name: Get the {{ tenant }} Admin URL
+  shell: >
+    oc get secret "{{ tenant }}-provider-key"  -o jsonpath='{ .data.adminURL }' -n "{{ project_name }}" | base64 -d 
+  register: tenant_admin_url_reg
+  ignore_errors: True
+
+
+# Get the {{ orgName}} Access Token
+- name: Get the {{ tenant }} Admin URL
+  shell: >
+    oc get secret "{{ tenant }}-provider-key"  -o jsonpath='{ .data.token }' -n "{{ project_name }}" | base64 -d 
+  register: tenant_access_token_reg
+  ignore_errors: True
+
+- set_fact:
+    tenant_admin_url: '{{tenant_admin_url_reg["stdout"]}}'
+
+- set_fact:
+    tenant_access_token: '{{tenant_access_token_reg["stdout"]}}'
+
+# create the tenant Gateway password
+- set_fact:
+    "{{ tenant }}_THREESCALE_PORTAL_ENDPOINT": "https://{{ tenant_access_token }}@{{ tenant }}-admin.apps.{{ var_az_dns_zone }}"
+
+- name: "tenant secret to be passed in ansible tower workflow"
+  set_stats:
+    data:
+      "{{ tenant }}_THREESCALE_PORTAL_ENDPOINT": "https://{{ tenant_access_token }}@{{ tenant }}-admin.apps.{{ var_az_dns_zone }}"
+
+- name: Parse RHSSO realm template data for each realm
+  template: 
+    src: "sso_clients.json.j2"
+    dest: "/tmp/sso_clients.json"
+
+- name: Create an API Token for client creation on RHSSO
+  uri:
+    url: "https://keycloak-rhsso-dx-nonprod.apps.{{ var_az_integration_dns_zone }}/auth/realms/master/protocol/openid-connect/token"
+    method: POST
+    validate_certs: no
+    body: "client_id=admin-cli&username={{ rhsso_keycloak_adminuser }}&password={{ rhsso_keycloak_adminpass }}&grant_type=password"
+    status_code: [200,201]
+    return_content: yes
+  register: result
+
+- set_fact:
+    SSO_CLIENT_TOKEN: "{{ result.json.access_token }}"
+
+- name: Create a client for tenant in RHSSO
+  uri:
+    url: "https://keycloak-rhsso-dx-nonprod.apps.{{ var_az_integration_dns_zone }}/auth/admin/realms/3scale-admin/clients"
+    method: POST
+    validate_certs: no
+    body_format: json
+    body: "{{ lookup('file','/tmp/sso_clients.json') }}"
+    headers:
+      Authorization: "bearer {{ SSO_CLIENT_TOKEN }}"
+    status_code: [200,201]
+    return_content: yes
+  register: result
+
+- name: create RHSSO integration for tenant
+  uri:
+    url: "https://{{ tenant }}-admin.apps.{{ var_az_integration_dns_zone }}/admin/api/account/authentication_providers.xml"
+    method: POST
+    validate_certs: no
+    body_format: form-urlencoded
+    body:
+    - [ provider_key, "{{ tenant_access_token }}" ]
+    - [ kind, keycloak ]
+    - [ name, "{{ tenant }}" ]
+    - [ client_id, "{{ tenant }}" ]
+    - [ client_secret, "{{ tenant }}" ]
+    - [ site, "https://keycloak-rhsso-dx-nonprod.apps.{{ var_az_integration_dns_zone }}/auth/realms/3scale-admin" ]
+    - [ published, true ]
+    status_code: [200,201]
+    return_content: yes
+  register: result

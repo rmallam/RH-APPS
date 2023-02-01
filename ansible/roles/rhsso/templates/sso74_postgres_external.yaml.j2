@@ -1,0 +1,234 @@
+apiVersion: v1
+items:
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    annotations:
+      description: ConfigMap providing service ca bundle.
+      service.beta.openshift.io/inject-cabundle: "true"
+    labels:
+      application: {{ rhsso_keycloak_name }}
+      rhsso: 7.4.0.GA
+    name: {{ rhsso_keycloak_name }}-service-ca
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      description: The web server's https port.
+      service.alpha.openshift.io/dependencies: '[{"name": "{{ rhsso_keycloak_name }}-postgresql", "kind": "Service"}]'
+      service.alpha.openshift.io/serving-cert-secret-name: {{ rhsso_keycloak_name }}-x509-https-secret
+    labels:
+      application: {{ rhsso_keycloak_name }}
+      rhsso: 7.4.0.GA
+    name: {{ rhsso_keycloak_name }}
+  spec:
+    ports:
+    - port: 8443
+      targetPort: 8443
+    selector:
+      deploymentConfig: {{ rhsso_keycloak_name }}
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      description: The database server's port.
+    labels:
+      application: {{ rhsso_keycloak_name }}
+      rhsso: 7.4.0.GA
+    name: {{ rhsso_keycloak_name }}-postgresql
+  spec:
+    externalName: {{ rhsso_keycloak_db_address }}
+    ports:
+    - port: {{ rhsso_keycloak_db_port }}
+      protocol: TCP
+      targetPort: {{ rhsso_keycloak_db_port }}
+    sessionAffinity: None
+    type: ExternalName
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      description: The JGroups ping port for clustering.
+      service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+      service.alpha.openshift.io/serving-cert-secret-name: {{ rhsso_keycloak_name }}-x509-jgroups-secret
+    labels:
+      application: {{ rhsso_keycloak_name }}
+      rhsso: 7.4.0.GA
+    name: {{ rhsso_keycloak_name }}-ping
+  spec:
+    clusterIP: None
+    ports:
+    - name: ping
+      port: 8888
+    selector:
+      deploymentConfig: {{ rhsso_keycloak_name }}
+- apiVersion: route.openshift.io/v1
+  id: {{ rhsso_keycloak_name }}-https
+  kind: Route
+  metadata:
+    annotations:
+      description: Route for application's https service.
+    labels:
+      application: {{ rhsso_keycloak_name }}
+      rhsso: 7.4.0.GA
+    name: {{ rhsso_keycloak_name }}
+  spec:
+    tls:
+      termination: reencrypt
+    to:
+      name: {{ rhsso_keycloak_name }}
+- apiVersion: apps.openshift.io/v1
+  kind: DeploymentConfig
+  metadata:
+    labels:
+      application: {{ rhsso_keycloak_name }}
+      rhsso: 7.4.0.GA
+    name: {{ rhsso_keycloak_name }}
+  spec:
+    replicas: {{ rhsso_keycloak_instances }}
+    selector:
+      deploymentConfig: {{ rhsso_keycloak_name }}
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        labels:
+          application: {{ rhsso_keycloak_name }}
+          deploymentConfig: {{ rhsso_keycloak_name }}
+        name: {{ rhsso_keycloak_name }}
+      spec:
+        containers:
+        - env:
+          # - name: SSO_HOSTNAME
+          #   value: ""
+          - name: DB_SERVICE_PREFIX_MAPPING
+            value: {{ rhsso_keycloak_name }}-postgresql=DB
+          - name: DB_JNDI
+            value: java:jboss/datasources/KeycloakDS
+          - name: DB_USERNAME
+            valueFrom:
+              secretKeyRef:
+                key: POSTGRES_USERNAME
+                name: {{ rhsso_keycloak_name }}-db-secret
+          - name: DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: POSTGRES_PASSWORD
+                name: {{ rhsso_keycloak_name }}-db-secret
+          - name: DB_DATABASE
+            valueFrom:
+              secretKeyRef:
+                key: POSTGRES_DATABASE
+                name: {{ rhsso_keycloak_name }}-db-secret
+          - name: TX_DATABASE_PREFIX_MAPPING
+            value: {{ rhsso_keycloak_name }}-postgresql=DB
+          - name: JGROUPS_PING_PROTOCOL
+            value: dns.DNS_PING
+          - name: OPENSHIFT_DNS_PING_SERVICE_NAME
+            value: {{ rhsso_keycloak_name }}-ping
+          - name: OPENSHIFT_DNS_PING_SERVICE_PORT
+            value: "8888"
+          - name: X509_CA_BUNDLE
+            value: /var/run/configmaps/service-ca/service-ca.crt /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          - name: JGROUPS_CLUSTER_PASSWORD
+            value: Flmv7eAu1DgNO1Qg6xhQXHGJPswxGbsf
+          - name: SSO_ADMIN_USERNAME
+            valueFrom:
+              secretKeyRef:
+                key: ADMIN_USERNAME
+                name: credential-{{ rhsso_keycloak_name }}
+          - name: SSO_ADMIN_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: ADMIN_PASSWORD
+                name: credential-{{ rhsso_keycloak_name }}
+          - name: {{ rhsso_keycloak_name | upper | replace("-","_") }}_POSTGRESQL_SERVICE_HOST
+            value: {{ rhsso_keycloak_name }}-postgresql.{{ rhsso_project_name }}.svc.cluster.local
+          - name: {{ rhsso_keycloak_name | upper | replace("-","_") }}_POSTGRESQL_SERVICE_PORT
+            valueFrom:
+              secretKeyRef:
+                key: POSTGRES_EXTERNAL_PORT
+                name: {{ rhsso_keycloak_name }}-db-secret
+{% set paths = [] %}  {# Temporary list #}
+{% for realm_name in realms %}
+   {% set path_to_file = '/var/run/configmaps/'~realm_name~'-realm/keycloak_realm.json' %}
+   {{ paths.append(path_to_file) }}
+{% endfor %}
+          - name: JAVA_OPTS_APPEND
+            value: "-Dkeycloak.migration.action=import -Dkeycloak.migration.provider=singleFile -Dkeycloak.migration.file={{ paths | join(',')}}"
+          image: {{ rhsso_keycloak_name }}
+          imagePullPolicy: Always
+          livenessProbe:
+            exec:
+              command:
+              - /bin/bash
+              - -c
+              - /opt/eap/bin/livenessProbe.sh
+            initialDelaySeconds: 60
+          name: {{ rhsso_keycloak_name }}
+          ports:
+          - containerPort: 8778
+            name: jolokia
+            protocol: TCP
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+          - containerPort: 8443
+            name: https
+            protocol: TCP
+          - containerPort: 8888
+            name: ping
+            protocol: TCP
+          readinessProbe:
+            exec:
+              command:
+              - /bin/bash
+              - -c
+              - /opt/eap/bin/readinessProbe.sh
+          resources:
+            limits:
+              memory: 1Gi
+          volumeMounts:
+          - mountPath: /etc/x509/https
+            name: {{ rhsso_keycloak_name }}-x509-https-volume
+            readOnly: true
+          - mountPath: /etc/x509/jgroups
+            name: {{ rhsso_keycloak_name }}-x509-jgroups-volume
+            readOnly: true
+          - mountPath: /var/run/configmaps/service-ca
+            name: service-ca
+            readOnly: true
+{% for realm_name in realms %}
+          - mountPath: /var/run/configmaps/{{ realm_name }}-realm
+            name: {{ realm_name }}-realm
+            readOnly: true
+{% endfor %}
+        terminationGracePeriodSeconds: 75
+        volumes:
+        - name: {{ rhsso_keycloak_name }}-x509-https-volume
+          secret:
+            secretName: {{ rhsso_keycloak_name }}-x509-https-secret
+        - name: {{ rhsso_keycloak_name }}-x509-jgroups-volume
+          secret:
+            secretName: {{ rhsso_keycloak_name }}-x509-jgroups-secret
+        - configMap:
+            name: {{ rhsso_keycloak_name }}-service-ca
+          name: service-ca
+{% for realm_name in realms %}
+        - configMap:
+            name: {{ rhsso_keycloak_name }}-realm-{{ realm_name }}
+          name: {{ realm_name }}-realm
+{% endfor %}
+    triggers:
+    - imageChangeParams:
+        automatic: true
+        containerNames:
+        - {{ rhsso_keycloak_name }}
+        from:
+          kind: ImageStreamTag
+          name: sso74-openshift-rhel8:7.4
+          namespace: openshift
+      type: ImageChange
+    - type: ConfigChange
+kind: List
+metadata: {}

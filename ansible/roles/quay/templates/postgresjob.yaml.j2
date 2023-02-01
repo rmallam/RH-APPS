@@ -1,0 +1,21 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: postgres
+          image: postgres
+          command: 
+          - sh
+          - "-c"
+          - |
+            /bin/bash <<'EOF'
+            export PGPASSWORD={{ az_quay_dbserver_password }};
+            psql -h {{ out_az_dbserver_server_fqdn }}  -U {{ var_az_dbserver_adminuser }}@{{ var_az_dbserver_name }} -d {{ var_az_dbserver_dbname }} -w
+            \c {{ var_az_dbserver_dbname }}
+            CREATE EXTENSION IF NOT EXISTS pg_trgm
+            EOF

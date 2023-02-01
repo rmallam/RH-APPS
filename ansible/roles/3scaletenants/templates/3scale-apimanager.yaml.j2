@@ -1,0 +1,29 @@
+apiVersion: apps.3scale.net/v1alpha1
+kind: APIManager
+metadata:
+  name: 3scaleapimanager
+  namespace: 3scalenew
+spec:
+  wildcardDomain: apps.aro-dx-quay-dev.ds.ahunga.co.nz
+  system:
+    fileStorage:
+      persistentVolumeClaim:
+        storageClassName: my-azurefile
+
+apiVersion: capabilities.3scale.net/v1alpha1
+kind: Tenant
+metadata:
+  name: newtenant
+  namespace: 3scale
+spec:
+  email: admin@example.com
+  masterCredentialsRef:
+    name: system-seed
+  organizationName: test.vodafone.com
+  passwordCredentialsRef:
+    name: ecorp-admin-secret
+  systemMasterUrl: 'https://master.apps.aro-dx-integration-dev.ds.ahunga.co.nz/'
+  tenantSecretRef:
+    name: ecorp-tenant-secret
+    namespace: 3scale-new
+  username: admin

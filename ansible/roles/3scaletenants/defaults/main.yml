@@ -1,0 +1,7 @@
+---
+# defaults file for 3scale
+project_name: "3scale-dx-nonprod"
+tenant_name: "newtenant"
+tenant_tmp_folder: "/tmp/tenant"
+ENV_TENANT_AMP_ORG_NAME: "Rakesh-last"
+API_WILDCARD_DOMAIN: "apps.aro-dx-integration-dev.ds.ahunga.co.nz"

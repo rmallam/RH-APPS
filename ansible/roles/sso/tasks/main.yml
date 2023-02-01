@@ -1,0 +1,153 @@
+---
+- name: Create RHSSO project
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    api_version: v1
+    state: present
+    kind: Namespace
+    name: "{{ rhsso_project_name }}"
+
+- name: "Ensure {{ rhsso_project_name }} operator group exists"
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1
+      kind: OperatorGroup
+      metadata:
+        name: "{{ rhsso_project_name }}"
+        namespace: "{{ rhsso_project_name }}"
+      spec:
+        targetNamespaces:
+          - "{{ rhsso_project_name }}"
+
+- name: Create RHSSO Subscription
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: rhsso-operator
+        namespace: "{{ rhsso_project_name }}"
+      spec:
+        channel: alpha
+        installPlanApproval: Automatic
+        name: rhsso-operator
+        source: redhat-operators
+        sourceNamespace: openshift-marketplace
+        startingCSV: rhsso-operator.7.4.5
+
+- name: Check RHSSO Operator Status (wait until complete)
+  k8s_info: 
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    kind: Deployment
+    name: rhsso-operator
+    namespace: "{{ rhsso_project_name }}"
+  register: result_obj
+  until: result_obj.resources[0].status.readyReplicas is defined and result_obj.resources[0].status.readyReplicas != 0
+  retries: 12
+  delay: 30
+
+- name: RHSSO Operator def
+  debug:
+    var: result_obj.resources[0]
+
+- set_fact:
+    rhsso_keycloak_db_secret: "{{ rhsso_keycloak_name }}-db-secret"
+    rhsso_keycloak_credentials_secret: "credential-{{ rhsso_keycloak_name }}"
+
+- name: "Create {{ rhsso_keycloak_db_secret }} secret for external DB access"
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:  
+        name: "{{ rhsso_keycloak_db_secret }}"
+        namespace: "{{ rhsso_project_name }}"
+      stringData:         
+        POSTGRES_DATABASE: "{{ rhsso_keycloak_db_name }}"
+        POSTGRES_EXTERNAL_ADDRESS: "{{ rhsso_keycloak_db_address }}"
+        POSTGRES_EXTERNAL_PORT: "{{ rhsso_keycloak_db_port }}"
+#        # Strongly recommended to use <'Keycloak CR Name'-postgresql>
+#        POSTGRES_HOST: <Database Service Name>         
+        POSTGRES_PASSWORD: "{{ rhsso_keycloak_db_password }}"
+        POSTGRES_SUPERUSER: "true"
+        POSTGRES_USERNAME: "{{ rhsso_keycloak_db_username }}"
+  no_log: true
+
+## Setting the admin credentials is not supported via the operator
+# - name: "Create {{ rhsso_keycloak_credentials_secret }} secret for admin access"
+#   k8s:
+#     host: "{{ api_url }}"
+#     api_key: "{{ auth_output.k8s_auth.api_key }}"
+#     state: present
+#     definition:
+#       apiVersion: v1
+#       kind: Secret
+#       metadata:  
+#         name: "{{ rhsso_keycloak_credentials_secret }}"
+#         namespace: "{{ rhsso_project_name }}"
+#       stringData:
+#         ADMIN_PASSWORD: "{{ rhsso_keycloak_admin_password }}"
+#         ADMIN_USERNAME: "{{ rhsso_keycloak_admin_username }}"
+#   no_log: true
+
+- name: Create RHSSO keycloak instance
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    definition:
+      apiVersion: keycloak.org/v1alpha1
+      kind: Keycloak
+      metadata:
+        name: "{{ rhsso_keycloak_name }}"
+        namespace: "{{ rhsso_project_name }}"
+      spec:
+        instances: "{{ rhsso_keycloak_instances }}"
+        externalAccess:
+          enabled: true
+        externalDatabase:
+          enabled: true
+        profile: RHSSO
+        extensions:
+          - https://github.com/aerogear/keycloak-metrics-spi/releases/download/1.0.4/keycloak-metrics-spi-1.0.4.jar
+
+- name: Check RHSSO StatefulSet status (wait until complete)
+  k8s_info: 
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    kind: StatefulSet
+    name: "{{ rhsso_keycloak_name }}"
+    namespace: "{{ rhsso_project_name }}"
+  register: result_obj
+  until: result_obj.resources[0].status.readyReplicas is defined and result_obj.resources[0].status.readyReplicas == rhsso_keycloak_instances
+  retries: 12
+  delay: 30
+
+- name: Retrieve RHSSO admin username and password from secret
+  k8s_info:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    kind: Secret
+    name: "{{ rhsso_keycloak_credentials_secret }}"
+    namespace: "{{ rhsso_project_name }}"
+  register: result_obj
+
+- debug:
+    msg: " {{ result_obj.resources[0].data.ADMIN_USERNAME | b64decode }} : {{ result_obj.resources[0].data.ADMIN_PASSWORD | b64decode }} "
+
+- debug: 
+    msg: "The above user:pwd may already be defined in the postgres database, that will take precedence over the secret above"
+  when: not db_create
+
+

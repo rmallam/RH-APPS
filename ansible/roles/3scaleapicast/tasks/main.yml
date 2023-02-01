@@ -1,0 +1,111 @@
+---
+#tasks file for 3scale
+- name: Create 3scale api cast project for tenant "{{ tenant }}"
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    api_version: v1
+    state: present
+    kind: Namespace
+    name: "3scale-{{ tenant }}"
+
+
+- name: Create admin credentials
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    merge_type: merge
+    name: "{{ tenant }}"
+    namespace: "3scale-{{ tenant }}"
+    api_version: v1
+    definition:
+      kind: Secret
+      stringData:
+        AdminPortalURL: "{{ lookup('vars', tenant + '_THREESCALE_PORTAL_ENDPOINT') }}"
+
+
+- name: Create an operator group
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    merge_type: merge
+    name: apicast-operator
+    namespace: "3scale-{{ tenant }}"
+    api_version: operators.coreos.com/v1
+    definition:
+      kind: OperatorGroup
+      spec:
+        targetNamespaces:
+          - "3scale-{{ tenant }}"
+
+- name: Create a apicast operator subscription
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    definition:
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+            name: apicast-operator
+            namespace: "3scale-{{ tenant }}"
+        spec:
+            channel: threescale-2.9
+            installPlanApproval: Automatic
+            name: apicast-operator
+            source: redhat-operators
+            sourceNamespace: openshift-marketplace
+            startingCSV: apicast-operator.v0.3.1
+  
+- name: Check apicast Operator Status (wait until complete)
+  k8s_info: 
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    kind: Deployment
+    name: apicast-operator
+    namespace: "3scale-{{ tenant }}"
+  register: apicastpods
+  until: apicastpods.resources[0].status.readyReplicas is defined and apicastpods.resources[0].status.readyReplicas != 0
+  retries: 12
+  delay: 30
+
+- name: Create a custom resource
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    api_version: v1alpha1
+    state: present
+    kind: APIcast
+    merge_type: merge
+    name: "{{ tenant }}"
+    namespace: "3scale-{{ tenant }}"
+    definition: 
+      spec:
+        adminPortalCredentialsRef:
+          name: "{{ tenant }}"
+        cacheConfigurationSeconds: 0
+        configurationLoadMode: lazy
+        deploymentEnvironment: production
+        logLevel: debug
+        managementAPIScope: debug
+        pathRoutingEnabled: true
+        replicas: 1
+
+- name: Check apicast CR Status (wait until complete)
+  k8s_info: 
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    kind: Deployment
+    name: "apicast-{{ tenant }}"
+    namespace: "3scale-{{ tenant }}"
+  register: apicastpods
+  until: apicastpods.resources[0].status.readyReplicas is defined and apicastpods.resources[0].status.readyReplicas != 0
+  retries: 12
+  delay: 30
+
+- name: create route for apicast
+  shell: >
+    oc create route edge --service="apicast-{{ tenant }}" --insecure-policy=Allow --hostname="{{ tenant }}-tenant.apps.{{ var_az_dns_zone }}" -n "3scale-{{ tenant }}"
+  register: tenant_access_token_reg
+  ignore_errors: True

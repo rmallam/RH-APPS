@@ -1,0 +1,17 @@
+---
+# defaults file for 3scale
+project_name: "openshift-operators"
+operator_channel: "stable"
+operator_plan_approval: "Automatic"
+operator_name: 
+  - "kiali-ossm"
+  - "jaeger-product"
+  - "servicemeshoperator"
+operator_source: "redhat-operators"
+operator_source_namespace: "openshift-marketplace"
+operator_api_group: "operators.coreos.com/v1alpha1"
+operators:
+  - jaeger
+  - kiali
+  - istio
+

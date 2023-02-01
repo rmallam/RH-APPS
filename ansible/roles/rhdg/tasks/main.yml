@@ -1,0 +1,58 @@
+---
+- name: Create RHDG project
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    api_version: v1
+    state: present
+    kind: Namespace
+    name: "{{ rhdg_project_name }}"
+
+- name: "Ensure {{ rhdg_project_name }} operator group exists"
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1
+      kind: OperatorGroup
+      metadata:
+        name: "{{ rhdg_project_name }}"
+        namespace: "{{ rhdg_project_name }}"
+      spec:
+        targetNamespaces:
+          - "{{ rhdg_project_name }}"
+
+- name: Create RHDG Subscription
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: datagrid-operator
+        namespace: "{{ rhdg_project_name }}"
+      spec:
+        channel: 8.1.x
+        installPlanApproval: Automatic 
+        name: datagrid
+        source: redhat-operators
+        sourceNamespace: openshift-marketplace
+
+
+- name: Check RHDG Operator Status (wait until complete)
+  k8s_info: 
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    kind: Deployment
+    name: infinispan-operator
+    namespace: "{{ rhdg_project_name }}"
+  register: datagrid_operator_obj
+  until: datagrid_operator_obj.resources[0].status.readyReplicas is defined and datagrid_operator_obj.resources[0].status.readyReplicas != 0
+  retries: 12
+  delay: 30
+
+- name: RHDG Operator def
+  debug:
+    var: datagrid_operator_obj.resources[0]

@@ -1,0 +1,5 @@
+*.bak
+.terraform
+terraform.tfstate
+terraform.tfvars
+backend.tf

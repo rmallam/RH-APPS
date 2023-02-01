@@ -1,0 +1,73 @@
+---
+- name: Log in to the cluster
+  shell: /tmp/oc login --server="{{ api_url }}" -u kubeadmin -p "{{ default_kubeadmin.stdout_lines.0 }}" --insecure-skip-tls-verify=true 
+  no_log: true 
+
+- name: Create cert-manager
+  shell: /tmp/oc create -f https://github.com/jetstack/cert-manager/releases/download/{{ cert_manager_version }}/cert-manager.yaml
+  ignore_errors: true
+
+- name: Create secret
+  shell: /tmp/oc create secret generic openid-client-secret-azuread -n "{{ item }}" --from-literal=clientSecret={{ az_app_aro_service_principal_password }}
+  ignore_errors: true
+  no_log: true 
+  loop:
+    - openshift-ingress
+    - cert-manager
+
+- name: Check CR Status (wait until complete)
+  k8s_info: 
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    kind: Deployment
+    name: "{{ item }}"
+    namespace: "{{ project_name }}"
+  register: cr
+  until: cr.resources[0].status.readyReplicas is defined and cr.resources[0].status.readyReplicas != 0
+  retries: 12
+  delay: 30
+  loop:
+    - cert-manager
+    - cert-manager-cainjector
+    - cert-manager-webhook
+
+- name: Log on using k8s_auth
+  k8s_auth:
+    host: "{{ api_url }}"
+    state: present
+    username: kubeadmin
+    password: "{{ default_kubeadmin.stdout_lines.0 }}"
+  register: auth_output
+
+- name: Create clusterissuer CR for lets encrypt 
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    resource_definition: "{{ lookup('template', 'templates/issuer.yaml.j2') }}"
+    validate_certs: no
+
+- name: Create certificate CR for Openshift API server
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    namespace: "{{ item }}"
+    resource_definition: "{{ lookup('template', 'templates/certificate.yaml.j2') }}"
+    validate_certs: no
+  loop:
+    - openshift-ingress
+    - cert-manager
+
+
+- name: Patch API server
+  shell: |
+      /tmp/oc patch apiserver cluster --type=merge -p '{"spec":{"servingCerts": {"namedCertificates": [{"names": ["api.{{ var_az_dns_zone }}"], "servingCertificate": {"name": "ingress-and-api-certs"}}]}}}' 
+
+- name: Patch ingress operator 
+  shell: |
+      /tmp/oc patch --type=merge -n openshift-ingress-operator ingresscontrollers/default   --patch '{"spec":{"defaultCertificate":{"name":"ingress-and-api-certs"}}}'
+
+
+
+

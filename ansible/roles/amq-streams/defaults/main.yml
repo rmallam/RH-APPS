@@ -1,0 +1,5 @@
+---
+# defaults file for 3scale
+project_name: "amq"
+kafka_cluster_name: "kafka-cluster"
+kafka_topic_name: "test-topic"

@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: List
+items:
+
+- kind: Role
+  apiVersion: rbac.authorization.k8s.io/v1
+  metadata:
+    name: system:controller:persistent-volume-binder
+    namespace: "{{ project_name }}"
+  rules:
+    - apiGroups: [""]
+      resources: ["secrets"]
+      verbs: ["create", "get", "delete"]
+
+- kind: RoleBinding
+  apiVersion: rbac.authorization.k8s.io/v1
+  metadata:
+    name: system:controller:persistent-volume-binder
+    namespace: "{{ project_name }}"
+  roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: system:controller:persistent-volume-binder
+  subjects:
+  - kind: ServiceAccount
+    name: persistent-volume-binder
+  namespace: kube-system
+
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    name: system:azure-cloud-provider
+  rules:
+  - apiGroups: ['']
+    resources: ['secrets']
+    verbs:     ['get','create']
+
+- apiVersion: rbac.authorization.k8s.io/v1beta1
+  kind: ClusterRoleBinding
+  metadata:
+    name: system:azure-cloud-provider
+  roleRef:
+    kind: ClusterRole
+    apiGroup: rbac.authorization.k8s.io
+    name: system:azure-cloud-provider
+  subjects:
+  - kind: ServiceAccount
+    name: persistent-volume-binder
+    namespace: kube-system 

@@ -1,0 +1,4 @@
+---
+# defaults file for az-postgres
+az_dbserver_location: "australiasoutheast"
+az_dbserver_sku: "GP_Gen5_2"

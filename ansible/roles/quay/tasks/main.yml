@@ -1,0 +1,325 @@
+---
+# tasks file for quay
+
+- name: Create quay project
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    api_version: v1
+    state: present
+    kind: Namespace
+    name: "{{ quay_project_name }}"
+
+- name: Create certificate CR for Openshift API server
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    namespace: "{{ quay_project_name }}"
+    resource_definition: "{{ lookup('template', 'templates/certificate.yaml.j2') }}"
+    validate_certs: no
+
+- name: Get the dockerconfigjson info
+  set_fact:
+    pull_secret: '{{ rhregistry_pullsecret | b64decode | from_json }}'
+
+- name: Create Quay pull secret
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    merge_type: merge
+    name: redhat-quay-pull-secret
+    namespace: "{{ quay_project_name }}"
+    api_version: v1
+    definition:
+      kind: Secret
+      type: kubernetes.io/dockerconfigjson
+      data:
+        .dockerconfigjson: "{{ pull_secret | to_json | b64encode }}"
+
+- name: Create Quay superuser credentials secret
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    merge_type: merge
+    name: quay-superuser-credentials
+    namespace: "{{ quay_project_name }}"
+    api_version: v1
+    definition:
+      kind: Secret
+      stringData:
+        superuser-username: "{{ rhquay_su_username }}"
+        superuser-password: "{{ rhquay_su_password }}"
+        superuser-email: "quay@redhat.com"
+
+- name: Create Quay config credentials for builtin user quayconfig
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    merge_type: merge
+    name: quay-config-credentials
+    namespace: "{{ quay_project_name }}"
+    api_version: v1
+    definition:
+      kind: Secret
+      stringData:
+        config-app-password: "{{ rhquay_config_password }}"
+
+- name: Create Quay database credentials
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    merge_type: merge
+    name: quay-db-credentials
+    namespace: "{{ quay_project_name }}"
+    api_version: v1
+    definition:
+      kind: Secret
+      stringData:
+        database-name: "{{ rhquay_db_name }}"
+        database-username: "{{ rhquay_db_username }}"
+        database-password: "{{ rhquay_db_password }}"
+        database-root-password: "quay@redhat.com"
+
+
+- name: Create an operator group
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    merge_type: merge
+    name: "{{ quay_operator_group_name }}"
+    namespace: "{{ quay_project_name }}"
+    api_version: operators.coreos.com/v1
+    definition:
+      kind: OperatorGroup
+      spec:
+        targetNamespaces:
+          - "{{ quay_project_name }}"
+
+- name: Create a Quay operator subscription
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: "{{ quay_operator_name }}"
+        namespace: "{{ quay_project_name }}"
+      spec:
+        channel: "{{ quay_channel }}"
+        installPlanApproval: Automatic
+        name: "{{ quay_operator_name }}"
+        source: "{{ quay_source }}"
+        sourceNamespace: "{{ quay_source_namespace }}"
+        startingCSV: "{{ quay_starting_csv }}"
+
+
+- name: Check CR Status (wait until complete)
+  k8s_info: 
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    kind: Deployment
+    name: "quay-operator.v3.5.2"
+    namespace: "{{ quay_project_name }}"
+  register: cr
+  until: cr.resources[0].status.readyReplicas is defined and cr.resources[0].status.readyReplicas != 0
+  retries: 12
+  delay: 30
+
+
+#Using Azure blob as registry backend
+# The following kb article describes how to interrogate Azure for the key used to authenticate the storage acount:
+# https://access.redhat.com/articles/4626541
+
+- name: List current database servers
+  shell: 'az postgres server list -g {{ var_az_resourcegroup_name }} --subscription {{ az_subscription_id }}'
+  register: current_databases
+
+- debug: 
+    var: current_databases.stdout
+
+- set_fact:
+    db_exists: false
+    db_create: false
+
+- set_fact:
+    db_exists: true
+  when:
+    - item.name == "{{ var_az_dbserver_name }}"
+  loop: "{{ current_databases.stdout }}"
+
+- name: Nuke the database server {{ var_az_dbserver_name }} if explicily requested to do so by variable var_nuke_the_existing_database
+  shell: 'az postgres server delete -g {{ var_az_resourcegroup_name }} --subscription {{ az_subscription_id }} -n "{{ var_az_dbserver_name }}" --yes --debug'
+  when:
+    - var_nuke_the_existing_database is defined
+    - var_nuke_the_existing_database
+
+- set_fact:
+    db_create: true
+  when: db_exists is not defined or (var_nuke_the_existing_database is defined and var_nuke_the_existing_database)
+
+- name: Create Azure Postgres server object
+  shell: 'az postgres server create -g {{ var_az_resourcegroup_name }} --subscription {{ az_subscription_id }} -n "{{ var_az_dbserver_name }}" --location {{ az_dbserver_location }} --admin-user {{ var_az_dbserver_adminuser }} --admin-password {{ az_quay_dbserver_password }} --sku-name {{ az_dbserver_sku }} --version {{ var_az_dbserver_postgresversion }} --storage-size {{ var_az_dbserver_storage }} --backup-retention 35 --tags "name=quay" --ssl-enforcement Disabled '
+  when: db_create
+
+- name: Create Azure Postgres database object
+  shell: 'az postgres db create --resource-group {{ var_az_resourcegroup_name }} --subscription {{ az_subscription_id }} --name "{{ var_az_dbserver_dbname }}" --server-name "{{ var_az_dbserver_name }}" '
+  when: db_create
+
+- name: Ensure access allowed from Azure IPs in the subscription
+  shell: 'az postgres server firewall-rule create --resource-group {{ var_az_resourcegroup_name }} --subscription {{ az_subscription_id }} --server-name "{{ var_az_dbserver_name }}" --start-ip-address "0.0.0.0" --end-ip-address "0.0.0.0" --name AllowAllWindowsAzureIps '
+  when: db_create
+
+- name: Get server details
+  shell: 'az postgres server show --resource-group {{ var_az_resourcegroup_name }} --subscription {{ az_subscription_id }} --name "{{ var_az_dbserver_name }}" '
+  register: pg_server_connection_string
+
+- set_fact:
+    out_az_dbserver_server_fqdn: "{{ (pg_server_connection_string.stdout | from_json).fullyQualifiedDomainName }}"
+
+- debug: 
+    var: out_az_dbserver_server_fqdn
+
+- name: Create an Azure storage account object
+  shell: az storage account create -g "{{ var_az_resourcegroup_name }}" -n "{{ az_storage_account_name }}"
+
+- name: Grab the storage account key
+  shell: az storage account keys list -g "{{ var_az_resourcegroup_name }}" -n "{{ az_storage_account_name }}" --query  "[?contains(keyName, 'key1')].[value]" --output tsv
+  register: storage_account_key
+
+- set_fact: 
+    storage_account_key_details: "{{ storage_account_key.stdout }}"
+
+- name: Create an Azure Storage Container
+  shell: az storage container create  -n "{{ az_storage_container_name }}" --account-name "{{ az_storage_account_name }}"  --account-key "{{ storage_account_key_details }}"
+
+- name: Generate SAS token
+  shell: az storage blob generate-sas --container-name "{{ az_storage_container_name }}" --account-name "{{ az_storage_account_name }}"  --account-key "{{ storage_account_key_details }}"  --name datastorage --permissions acdrw
+  register: sas_token
+
+- set_fact: 
+    sas_token_details: "{{ sas_token.stdout }}"
+
+- name: Create postgres pod to create extension on the azure postgres db created
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    namespace: "{{ quay_project_name }}"
+    resource_definition: "{{ lookup('template', 'templates/postgresjob.yaml.j2') }}"
+    validate_certs: no
+
+- name: Check job completion
+  k8s_info: 
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    kind: Job
+    name: "postgres"
+    namespace: "{{ quay_project_name }}"
+  register: job
+  until: job.resources[0].status.succeeded is defined and job.resources[0].status.succeeded == 1
+  retries: 12
+  delay: 10
+
+- name: delete job after execution
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: absent
+    namespace: "{{ quay_project_name }}"
+    resource_definition: "{{ lookup('template', 'templates/postgresjob.yaml.j2') }}"
+    validate_certs: no
+
+- name: Get the ssl.crt from letsencrypt created secret
+  shell: >
+    oc get secret {{ quay_project_name }} -n {{ quay_project_name }} -o jsonpath='{ .data.tls\.crt }'
+  register: sslcrt
+  ignore_errors: True
+
+- set_fact:
+    ssl_crt: '{{sslcrt["stdout"]}}'
+
+- name: Get the ssl.key from letsencrypt created secret
+  shell: >
+    oc get secret {{ quay_project_name }} -n {{ quay_project_name }} -o jsonpath='{ .data.tls\.key }'
+  register: sslkey
+  ignore_errors: True
+
+- set_fact:
+    ssl_key: '{{sslkey["stdout"]}}'
+
+- name: CREATE config yaml secret
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    definition: 
+      apiVersion: v1
+      kind: Secret
+      type: Opaque             
+      metadata:
+        name: "quay-config-secret"
+        namespace: "{{ quay_project_name }}"     
+      data:
+        config.yaml: "{{ lookup('template', 'templates/config.yaml.j2') | b64encode }}"
+        ssl.cert: "{{ ssl_crt }}"
+        ssl.key: "{{ ssl_key }}"
+
+- name: Create a custom resource
+  retries: 5
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    api_version: quay.redhat.com/v1
+    kind: QuayRegistry
+    merge_type: merge
+    name: quayregistry
+    namespace: "{{ quay_project_name }}"
+    definition: 
+      spec:
+        components:
+          - kind: objectstorage
+            managed: false
+          - kind: route
+            managed: false
+          - kind: mirror
+            managed: false
+          - kind: postgres
+            managed: false
+          - kind: clair
+            managed: true
+          - kind: redis
+            managed: true
+          - kind: horizontalpodautoscaler
+            managed: true
+          - kind: monitoring 
+            managed: false
+        configBundleSecret: "quay-config-secret"
+
+
+- name: Create a Quay operator subscription
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: "{{ quay_operator_name }}"
+        namespace: "{{ quay_project_name }}"
+      spec:
+        channel: "{{ quay_channel }}"
+        installPlanApproval: Manual
+        name: "{{ quay_operator_name }}"
+        source: "{{ quay_source }}"
+        sourceNamespace: "{{ quay_source_namespace }}"
+        startingCSV: "{{ quay_starting_csv }}"
+
+

@@ -1,0 +1,33 @@
+---
+- name: Create a "{{ project_name }}" operator subscription
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    definition:
+      apiVersion: "{{ operator_api_group }}"
+      kind: Subscription
+      metadata:
+        name: "{{ item }}"
+        namespace: "{{ project_name }}"
+      spec:
+        channel: "{{ operator_channel }}"
+        installPlanApproval: "{{ operator_plan_approval }}"
+        name: "{{ item }}"
+        source: "{{ operator_source }}"
+        sourceNamespace: "{{ operator_source_namespace }}"
+  with_items: 
+    - "{{ operator_name }}"
+
+- name: Check CR Status (wait until complete)
+  k8s_info: 
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    kind: Deployment
+    name: "{{ item }}-operator"
+    namespace: "{{ project_name }}"
+  register: cr
+  until: cr.resources[0].status.readyReplicas is defined and cr.resources[0].status.readyReplicas != 0
+  retries: 12
+  delay: 30
+  with_items: 
+    - "{{ operators }}"

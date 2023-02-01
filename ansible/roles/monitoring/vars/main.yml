@@ -1,0 +1,6 @@
+---
+# vars file for monitoring
+var_label: "node-role.kubernetes.io/worker"
+var_prometheus_storage: 40Gi
+var_alertmanager_storage: 40Gi
+var_retention: 3d

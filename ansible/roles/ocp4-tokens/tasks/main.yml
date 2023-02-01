@@ -1,0 +1,78 @@
+---
+- name: Extract oc and kubeadm client tools 
+  retries: 5
+  unarchive:
+    src: "{{ var_client_url }}"
+    remote_src: true
+    dest: /tmp/
+    keep_newer: true
+
+- name: Log in to Azure
+  shell: 'az login --service-principal -u {{ az_app_aro_service_principal_appid }} -p {{ az_app_aro_service_principal_password }} --tenant {{ az_tenant_id }}'
+  register: login_result
+#  no_log: true 
+
+- debug:
+    var:  login_result
+
+- name: Set the Default Location
+  shell: 'az config set defaults.location=australiaeast'
+
+- name: Tell the cli what subscription to use
+  shell: 'az account set --subscription {{ az_subscription_id }}'
+
+- name: Register kube initial credential
+  shell: 'az aro list-credentials -n "{{ var_az_aro_name }}" -g "{{ var_az_resourcegroup_name }}" --query kubeadminPassword -o tsv'
+  register: default_kubeadmin
+
+- debug:
+    var:  default_kubeadmin.stdout_lines.0
+
+- name: Register kube api server
+  shell: az aro show -n "{{ var_az_aro_name }}" -g "{{ var_az_resourcegroup_name }}" --query apiserverProfile.ip -o tsv
+  register: kube_api
+
+- name: put api URL into a fact
+  set_fact:
+    api_url: "https://{{ kube_api.stdout_lines.0 }}:6443"
+
+- name: put api ip into a fact
+  set_fact:
+    kubeip: "{{ kube_api.stdout_lines.0 }}"
+
+- debug:
+    var: api_url
+
+- name: Register ingress api ip
+  shell: az aro show -n "{{ var_az_aro_name }}" -g "{{ var_az_resourcegroup_name }}" --query ingressProfiles[0].ip -o tsv
+  register: ingress_ip
+
+- name: put ingress ip into a fact
+  set_fact:
+    ingressip: "{{ ingress_ip.stdout_lines.0 }}"
+
+- debug:
+    var: ingressip
+
+# The following task will only work if it is run after DNS is set up in the post-install role.
+- name: Log in to the cluster
+  shell: /tmp/oc login --server="{{ api_url }}" -u kubeadmin -p "{{ default_kubeadmin.stdout_lines.0 }}" --insecure-skip-tls-verify=true 
+#  no_log: true 
+  when: not post_install
+
+- name: Log on using k8s_auth
+  k8s_auth:
+    host: "{{ api_url }}"
+    state: present
+    username: kubeadmin
+    password: "{{ default_kubeadmin.stdout_lines.0 }}"
+  register: auth_output
+
+- name: Grab some global cluster trivia
+  k8s_facts:
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    api_version: config.openshift.io/v1
+    host: "{{ api_url }}"
+    kind: Infrastructure
+    name: cluster
+  register: infradata

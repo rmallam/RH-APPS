@@ -1,0 +1,3 @@
+---
+# vars file for ocp4-tokens
+var_client_url: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/4.5.16/openshift-client-linux.tar.gz

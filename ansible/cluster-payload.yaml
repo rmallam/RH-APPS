@@ -1,0 +1,178 @@
+---
+- name: Deploy OpenShift Cluster Payload
+  hosts: awsutasrp02
+  module_defaults:
+    group/k8s:
+      validate_certs: false
+  vars:
+    post_install: false
+    ansible_python_interpreter: /usr/bin/python3.6
+  tasks:
+    - name: Establish access to ARO infrastructure
+      include_role:
+        name: ocp4-tokens
+
+    - name: Deploy Quay postgres db
+      include_role:
+        name: az-postgres
+      vars:
+        var_az_dbserver_name: "{{var_az_quay_dbserver_name}}"
+        var_az_dbserver_dbname: "{{var_az_quay_dbserver_dbname}}"
+        var_nuke_the_existing_database: "{{var_az_quay_dbserver_recreate}}"
+        var_az_dbserver_adminuser: "{{var_az_quay_dbserver_adminuser}}"
+        var_az_dbserver_postgresversion: "{{var_az_quay_dbserver_postgresversion}}"
+        var_az_dbserver_storage: "{{var_az_quay_dbserver_storage}}"
+      when:
+        - var_quay_postgres_enabled is defined
+        - var_quay_postgres_enabled
+
+    - name: Deploy Quay
+      include_role:
+        name: quay
+      when:
+        - var_quay_enabled is defined
+        - var_quay_enabled
+
+    - name: 3scale  - Deploy Postgres for system-database
+      include_role:
+        name: az-postgres
+      vars:
+        var_az_dbserver_name: "{{var_3scale_dbserver_name}}"
+        var_az_dbserver_dbname: "{{var_3scale_dbserver_dbname}}"
+        var_nuke_the_existing_database: "{{var_3scale_dbserver_recreate}}"
+        var_az_dbserver_adminuser: "{{threescale_postgres_adminuser}}"
+        var_az_dbserver_password: "{{threescale_postgres_adminpass}}"
+        var_az_dbserver_postgresversion: "{{var_3scale_dbserver_postgresversion}}"
+      when:
+        - var_3scale_enabled is defined
+        - var_3scale_enabled
+
+    - name: Deploy 3Scale
+      include_role:
+        name: 3scale
+      vars:
+        project_name: "{{ var_3scale_project_name }}"
+        threescale_db_url: "postgresql://{{ (threescale_postgres_adminuser + '@' + var_3scale_dbserver_name ) | urlencode }}:{{ threescale_postgres_adminpass | urlencode }}@{{ out_az_dbserver_server_fqdn }}:5432/{{ var_3scale_dbserver_dbname }}"
+        threescale_db_password: "{{ threescale_postgres_adminpass }}"
+        threescale_db_username: "{{ threescale_postgres_adminuser }}@{{ var_3scale_dbserver_name }}"
+      when:
+        - var_3scale_enabled is defined
+        - var_3scale_enabled
+
+    - name: Deploy 3Scale tenants
+      include_role:
+        name: 3scaletenants
+      with_items: 
+        - "{{ var_3scale_tenants }}"
+      vars:
+        tenant: "{{ item }}"
+      when:
+        - var_3scale_tenancy_enabled is defined
+        - var_3scale_tenancy_enabled
+
+    - name: Deploy 3Scale apicast for a tenant
+      include_role:
+        name: 3scaleapicast
+      with_items: 
+        - "{{ var_3scale_tenants }}"
+      vars:
+        tenant: "{{ item }}"
+      when:
+        - var_3scale_apicast_enabled is defined
+        - var_3scale_apicast_enabled
+
+#use this to deploy 3scale tenants and their apicast in the same openshift cluster  
+    # - name: Deploy 3Scale tenants
+    #   include_role:
+    #     name: "{{ item[0] }}"
+    #   with_nested: 
+    #     - ['3scaletenants', '3scaleapicast']
+    #     - "{{ var_3scale_tenants }}"
+    #   vars:
+    #     tenant: "{{ item[1] }}"
+    #   when:
+    #     - var_3scale_tenancy_enabled is defined
+    #     - var_3scale_tenancy_enabled
+
+    - name: RHSSO  - Deploy Postgres for RH SSO
+      include_role:
+        name: az-postgres
+      vars:
+        var_az_dbserver_name: "{{var_sso_dbserver_name}}"
+        var_az_dbserver_dbname: "{{var_sso_dbserver_dbname}}"
+        var_nuke_the_existing_database: "{{var_sso_dbserver_recreate}}"
+        var_az_dbserver_adminuser: "{{rhsso_postgres_adminuser}}"
+        var_az_dbserver_password: "{{rhsso_postgres_adminpass}}"
+        var_az_dbserver_postgresversion: "{{var_sso_dbserver_postgresversion}}"
+      when:
+        - var_sso_enabled is defined
+        - var_sso_enabled
+
+    - name: RHSSO - Deploy RHSSO
+      include_role:
+        name: rhsso
+      vars:
+        rhsso_project_name: "{{ var_rhsso_project_name }}"
+        rhsso_keycloak_db_address : "{{ out_az_dbserver_server_fqdn }}"
+        rhsso_keycloak_db_name: "{{ var_sso_dbserver_dbname }}"
+        rhsso_keycloak_db_port: "5432"
+        rhsso_keycloak_db_password: "{{ rhsso_postgres_adminpass }}"
+        rhsso_keycloak_db_username: "{{ rhsso_postgres_adminuser }}@{{ var_sso_dbserver_name }}"
+## Defining admin credentials not yet supported from operator
+        rhsso_keycloak_admin_password: "{{rhsso_keycloak_adminpass}}"
+        rhsso_keycloak_admin_username: "{{rhsso_keycloak_adminuser}}"
+      when:
+        - var_sso_enabled is defined
+        - var_sso_enabled
+
+## Feature not available in RHDG Operator. See https://ahunga.atlassian.net/browse/RPS-165
+# - name: RHDG - Deploy Postgres for RH Data Grid
+#   include_role: 
+#     name: az-postgres
+#   vars:
+#     var_az_dbserver_name: "{{var_rhdg_dbserver_name}}"
+#     var_az_dbserver_dbname: "{{var_rhdg_dbserver_dbname}}"
+#     var_nuke_the_existing_database: "{{var_rhdg_dbserver_recreate}}"
+#     var_az_dbserver_adminuser: "{{rhdg_postgres_adminuser}}"
+#     var_az_dbserver_password: "{{rhdg_postgres_adminpass}}"
+#     var_az_dbserver_postgresversion: "{{var_rhdg_dbserver_postgresversion}}"
+#   when:
+#     - var_rhdg_enabled is defined
+#     - var_rhdg_enabled
+
+    - name: RHDG - Deploy RHDG Operator
+      include_role:
+        name: rhdg
+      vars:
+        rhdg_project_name: "{{ var_rhdg_project_name }}"
+      when:
+        - var_rhdg_enabled is defined
+        - var_rhdg_enabled
+
+    - name: RHDG - Deploy Data Grid instance
+      include_role:
+        name: rhdg-datagrid
+      vars:
+        rhdg_datagrid_project_name: "{{ var_rhdg_project_name }}"
+        rhdg_datagrid_name: "datagrid-rhsso"
+        rhdg_datagrid_developer_username: "{{ rhdg_datagrid_user }}"
+        rhdg_datagrid_developer_password: "{{ rhdg_datagrid_userpass }}"
+        rhdg_datagrid_operator_password: "{{ rhdg_datagrid_adminpass }}"
+
+      when:
+        - var_rhdg_enabled is defined
+        - var_rhdg_enabled
+
+    - name: Deploy amq streams
+      include_role:
+        name: amq-streams
+      when:
+        - var_amq_enabled is defined
+        - var_amq_enabled
+
+    - name: Deploy ISTIO Service Mesh
+      include_role:
+        name: serviceMesh
+      when:
+        - var_istio_enabled is defined
+        - var_istio_enabled

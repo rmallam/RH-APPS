@@ -1,0 +1,54 @@
+---
+- name: Deploy cluster monitoring config map
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    name: cluster-monitoring-config
+    namespace: openshift-monitoring
+    api_version: v1
+    kind: ConfigMap
+    definition:      
+      data:
+        config.yaml: |
+          prometheusOperator:
+            nodeSelector:
+              node-role.kubernetes.io/worker: ""
+          prometheusK8s:
+            nodeSelector:
+              node-role.kubernetes.io/worker: ""
+            retention: "{{ var_retention }}"
+            volumeClaimTemplate:
+              metadata:
+                name: prometheusdb
+              spec:
+                storageClassName: managed-premium
+                resources:
+                  requests:
+                    storage: "var_prometheus_storage"
+          alertmanagerMain:
+            nodeSelector:
+              node-role.kubernetes.io/worker: ""
+            volumeClaimTemplate:
+              metadata:
+                name: alertmanager
+              spec:
+                storageClassName: managed-premium
+                resources:
+                  requests:
+                    storage: "var_alertmanager_storage"
+          alertmanagerMain:
+            nodeSelector:
+              node-role.kubernetes.io/worker: ""
+          kubeStateMetrics:
+            nodeSelector:
+              node-role.kubernetes.io/worker: ""
+          grafana:
+            nodeSelector:
+              node-role.kubernetes.io/worker: ""
+          telemeterClient:
+            nodeSelector:
+              node-role.kubernetes.io/worker: ""
+          k8sPrometheusAdapter:
+            nodeSelector:
+              node-role.kubernetes.io/worker: ""
+

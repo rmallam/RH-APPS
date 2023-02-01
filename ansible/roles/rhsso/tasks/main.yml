@@ -1,0 +1,126 @@
+---
+# Installing via Template method
+- name: Create RHSSO project
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    api_version: v1
+    state: present
+    kind: Namespace
+    name: "{{ rhsso_project_name }}"
+
+- name: Delete resources when db was recreated
+  shell: "oc  -n {{ rhsso_project_name }} delete all -l application={{ rhsso_keycloak_name }}"
+  when: db_create
+
+- name: "Delete any existing ConfigMap"
+  shell: "oc -n {{ rhsso_project_name }} delete configmap -l application={{ rhsso_keycloak_name }}"
+
+- set_fact:
+    rhsso_keycloak_db_secret: "{{ rhsso_keycloak_name }}-db-secret"
+    rhsso_keycloak_credentials_secret: "credential-{{ rhsso_keycloak_name }}"
+
+- name: Ensure there are no previous certificate configuraiton
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: absent
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:  
+        name: "{{ rhsso_keycloak_name }}-service-ca"
+        namespace: "{{ rhsso_project_name }}"
+
+- name: "Create {{ rhsso_keycloak_db_secret }} secret for external DB access"
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:  
+        name: "{{ rhsso_keycloak_db_secret }}"
+        namespace: "{{ rhsso_project_name }}"
+      stringData:         
+        POSTGRES_DATABASE: "{{ rhsso_keycloak_db_name }}"
+        POSTGRES_EXTERNAL_ADDRESS: "{{ rhsso_keycloak_db_address }}"
+        POSTGRES_EXTERNAL_PORT: "{{ rhsso_keycloak_db_port }}"
+#        # Strongly recommended to use <'Keycloak CR Name'-postgresql>
+#        POSTGRES_HOST: <Database Service Name>         
+        POSTGRES_PASSWORD: "{{ rhsso_keycloak_db_password }}"
+        POSTGRES_SUPERUSER: "true"
+        POSTGRES_USERNAME: "{{ rhsso_keycloak_db_username }}"
+  no_log: true
+
+# Setting the admin credentials is not supported via the operator
+- name: "Create {{ rhsso_keycloak_credentials_secret }} secret for admin access"
+  k8s:
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:  
+        name: "{{ rhsso_keycloak_credentials_secret }}"
+        namespace: "{{ rhsso_project_name }}"
+      stringData:
+        ADMIN_PASSWORD: "{{ rhsso_keycloak_admin_password }}"
+        ADMIN_USERNAME: "{{ rhsso_keycloak_admin_username }}"
+  no_log: true
+
+## add the initial load of realms in this list with its respective data file
+## under /templates/{{realm-name}}_realm.json.j2
+- set_fact: 
+    realms:
+      - 3scale-admin
+
+- file: 
+    path: "/tmp/{{ item }}"
+    state: directory
+  with_items: "{{ realms }}"
+
+- name: Parse RHSSO realm template data for each realm
+  template: 
+    src: "{{ item }}_realm.json.j2"
+    dest: "/tmp/{{ item }}/keycloak_realm.json"
+  with_items: "{{ realms }}"
+
+- name: "Create RHSSO realm data as ConfigMap"
+  shell: "oc -n {{ rhsso_project_name }} create configmap {{ rhsso_keycloak_name }}-realm-{{ item }} --from-file=/tmp/{{ item }}/keycloak_realm.json"
+  with_items: "{{ realms }}"
+
+- name: "apply label to config maps"
+  shell: "oc -n {{ rhsso_project_name }} label configmap {{ rhsso_keycloak_name }}-realm-{{ item }} application={{ rhsso_keycloak_name }}"
+  with_items: "{{ realms }}"
+
+- name: Create RHSSO Template
+  template: 
+    src: sso74_postgres_external.yaml.j2
+    dest: "/tmp/sso74_postgres_external.yaml"
+
+- name: set view role to default user
+  shell: "oc -n {{ rhsso_project_name }} policy add-role-to-user view system:serviceaccount:{{ rhsso_project_name }}:default"
+
+- name: "Create {{ rhsso_keycloak_name }} app"
+  shell: "oc  -n {{ rhsso_project_name }} apply -f /tmp/sso74_postgres_external.yaml"
+
+- name: Check RHSSO DeploymentConfig status (wait until complete)
+  k8s_info: 
+    host: "{{ api_url }}"
+    api_key: "{{ auth_output.k8s_auth.api_key }}"
+    kind: DeploymentConfig
+    name: "{{ rhsso_keycloak_name }}"
+    namespace: "{{ rhsso_project_name }}"
+  register: result_obj
+  until: result_obj.resources[0].status.readyReplicas is defined and result_obj.resources[0].status.readyReplicas == rhsso_keycloak_instances
+  retries: 12
+  delay: 30
+
+
+- name: clean up temp folder/files
+  file:
+    path: "/tmp/sso74_postgres_external.yaml"
+    state: absent

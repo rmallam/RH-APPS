@@ -1,0 +1,3 @@
+---
+rhsso_keycloak_name: "keycloak"
+rhsso_keycloak_instances: 1

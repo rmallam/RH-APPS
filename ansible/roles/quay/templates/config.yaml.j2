@@ -1,0 +1,22 @@
+DATABASE_SECRET_KEY: '105054189702605045872243453670452940127842452072574711507972391654707221304466'
+DISTRIBUTED_STORAGE_CONFIG:
+  azure:
+  - AzureStorage
+  - azure_account_key: {{ storage_account_key_details }}
+    azure_account_name: {{ az_storage_account_name }}
+    azure_container: {{ az_storage_container_name }}
+    storage_path: /datastorage/registry
+    sas_token: {{ sas_token_details }}
+DISTRIBUTED_STORAGE_PREFERENCE:
+- azure
+FEATURE_DIRECT_LOGIN: true
+REGISTRY_TITLE: Red Hat Quay
+REGISTRY_TITLE_SHORT: Red Hat Quay
+SECRET_KEY: '68100502763525491860092525005337788637795440457453957164998579309545256051145'
+PREFERRED_URL_SCHEME: https
+FEATURE_GENERAL_OCI_SUPPORT: true
+FEATURE_HELM_OCI_SUPPORT: true
+DB_URI: postgresql://{{ var_az_dbserver_adminuser }}@{{ var_az_dbserver_name }}:{{ az_quay_dbserver_password }}@{{ out_az_dbserver_server_fqdn }}:5432/{{ var_az_dbserver_dbname }}
+SERVER_HOSTNAME: vodafone.apps.{{ var_az_dns_zone }}
+SUPER_USERS:
+  - admin

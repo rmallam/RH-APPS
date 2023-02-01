@@ -1,0 +1,51 @@
+---
+
+- name: List current database servers
+  shell: 'az postgres server list -g {{ var_az_resourcegroup_name }} --subscription {{ az_subscription_id }}'
+  register: current_databases
+
+- debug: 
+    var: current_databases.stdout
+
+- set_fact:
+    db_exists: false
+    db_create: false
+
+- set_fact:
+    db_exists: true
+  when:
+    - item.name == "{{ var_az_dbserver_name }}"
+  loop: "{{ current_databases.stdout }}"
+
+- name: Nuke the database server {{ var_az_dbserver_name }} if explicily requested to do so by variable var_nuke_the_existing_database
+  shell: 'az postgres server delete -g {{ var_az_resourcegroup_name }} --subscription {{ az_subscription_id }} -n "{{ var_az_dbserver_name }}" --yes --debug'
+  when:
+    - var_nuke_the_existing_database is defined
+    - var_nuke_the_existing_database
+
+- set_fact:
+    db_create: true
+  when: db_exists is not defined or (var_nuke_the_existing_database is defined and var_nuke_the_existing_database)
+
+- name: Create Azure Postgres server object
+  shell: 'az postgres server create -g {{ var_az_resourcegroup_name }} --subscription {{ az_subscription_id }} -n "{{ var_az_dbserver_name }}" --location {{ az_dbserver_location }} --admin-user {{ var_az_dbserver_adminuser }} --admin-password {{ var_az_dbserver_password }} --sku-name {{ az_dbserver_sku }} --version {{ var_az_dbserver_postgresversion }} --ssl-enforcement Disabled '
+  when: db_create
+
+- name: Create Azure Postgres database object
+  shell: 'az postgres db create --resource-group {{ var_az_resourcegroup_name }} --subscription {{ az_subscription_id }} --name "{{ var_az_dbserver_dbname }}" --server-name "{{ var_az_dbserver_name }}" '
+  when: db_create
+
+- name: Ensure access allowed from Azure IPs in the subscription
+  shell: 'az postgres server firewall-rule create --resource-group {{ var_az_resourcegroup_name }} --subscription {{ az_subscription_id }} --server-name "{{ var_az_dbserver_name }}" --start-ip-address "0.0.0.0" --end-ip-address "0.0.0.0" --name AllowAllWindowsAzureIps '
+  when: db_create
+
+- name: Get server details
+  shell: 'az postgres server show --resource-group {{ var_az_resourcegroup_name }} --subscription {{ az_subscription_id }} --name "{{ var_az_dbserver_name }}" '
+  register: pg_server_connection_string
+
+- set_fact:
+    out_az_dbserver_server_fqdn: "{{ (pg_server_connection_string.stdout | from_json).fullyQualifiedDomainName }}"
+
+- debug: 
+    var: out_az_dbserver_server_fqdn
+  

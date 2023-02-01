@@ -1,0 +1,23 @@
+
+apiVersion: cert-manager.io/v1alpha3
+kind: ClusterIssuer
+metadata:
+  name: {{ var_az_dns_zone }}
+spec:
+  acme:
+    email: rmallam@redhat.com
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+        name: aro-integration-privatekey
+    solvers:
+    - dns01:
+          azuredns:
+              clientID: {{ az_app_aro_service_principal_appid  }}
+              clientSecretSecretRef:
+                name: openid-client-secret-azuread
+                key: clientSecret
+              subscriptionID: {{ az_subscription_id }}
+              tenantID: {{ az_tenant_id }}
+              resourceGroupName: {{ var_az_resourcegroup_name }}
+              hostedZoneName: {{ var_az_dns_zone }}
+              environment: AzurePublicCloud

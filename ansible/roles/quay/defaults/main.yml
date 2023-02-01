@@ -1,0 +1,14 @@
+---
+# defaults file for quay
+quay_project_name: "dx-quay"
+quay_operator_group_name: "quay-operators"
+quay_operator_name: "quay-operator"
+# Azure objects:
+az_storage_account_name: "dxquaydb"
+az_storage_container_name: "dxquayregistry"
+# Marketplace specifics:
+quay_source: "redhat-operators"
+quay_source_namespace: "openshift-marketplace"
+# Version
+quay_starting_csv: "quay-operator.v3.5.2"
+quay_channel: "quay-v3.5"
